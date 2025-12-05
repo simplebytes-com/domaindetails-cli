@@ -1,39 +1,31 @@
-# Homebrew formula for domaindetails CLI
-# To install: brew install simplebytes-com/tap/domaindetails
+# Homebrew formula for domaindetails CLI (homebrew-core version)
+# This formula builds from source as required by homebrew-core
 #
-# This formula is published to: https://github.com/simplebytes-com/homebrew-tap
+# For the tap version (prebuilt binaries), see:
+# https://github.com/simplebytes-com/homebrew-tap
 
 class Domaindetails < Formula
-  desc "Domain RDAP and WHOIS lookup CLI tool"
+  desc "Fast CLI tool for domain registration lookups via RDAP and WHOIS"
   homepage "https://domaindetails.com"
-  version "1.0.0"
+  url "https://github.com/simplebytes-com/domaindetails-cli/archive/refs/tags/v1.0.1.tar.gz"
+  sha256 "a7ac0c70b6f3c10a2ca4840431a0b0c46927658a3512fcca093545dd0022dae7"
   license "MIT"
+  head "https://github.com/simplebytes-com/domaindetails-cli.git", branch: "main"
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v#{version}/domaindetails-#{version}-darwin-arm64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_DARWIN_ARM64"
-    else
-      url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v#{version}/domaindetails-#{version}-darwin-amd64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_DARWIN_AMD64"
-    end
-  end
-
-  on_linux do
-    if Hardware::CPU.arm?
-      url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v#{version}/domaindetails-#{version}-linux-arm64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_LINUX_ARM64"
-    else
-      url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v#{version}/domaindetails-#{version}-linux-amd64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256_FOR_LINUX_AMD64"
-    end
-  end
+  depends_on "go" => :build
 
   def install
-    bin.install "domaindetails"
+    ldflags = %W[
+      -s -w
+      -X main.version=#{version}
+      -X main.commit=#{tap.user}
+      -X main.date=#{time.iso8601}
+    ]
+    system "go", "build", *std_go_args(ldflags:), "./cmd/domaindetails"
   end
 
   test do
-    system "#{bin}/domaindetails", "--version"
+    assert_match "domaindetails", shell_output("#{bin}/domaindetails --help")
+    assert_match version.to_s, shell_output("#{bin}/domaindetails --version")
   end
 end
