@@ -24,6 +24,8 @@ func SetVersionInfo(version, commit, date string) {
 	versionStr = version
 	commitStr = commit
 	dateStr = date
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate(fmt.Sprintf("domaindetails %s (commit: %s, built: %s)\n", version, commit, date))
 }
 
 // rootCmd is the base command
@@ -58,7 +60,4 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVarP(&rawOutput, "raw", "r", false, "Include raw response data")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
-
-	// Version template
-	rootCmd.SetVersionTemplate(fmt.Sprintf("domaindetails %s (commit: %s, built: %s)\n", versionStr, commitStr, dateStr))
 }
