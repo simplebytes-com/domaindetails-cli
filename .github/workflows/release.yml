@@ -1,0 +1,248 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          LDFLAGS="-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE} -w -s"
+
+          OUTPUT="domaindetails-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            OUTPUT="${OUTPUT}.exe"
+          fi
+
+          go build -ldflags="${LDFLAGS}" -o ${OUTPUT} ./cmd/domaindetails
+
+      - name: Create archive (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          BINARY="domaindetails-${{ matrix.goos }}-${{ matrix.goarch }}"
+          ARCHIVE="domaindetails-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          tar -czf ${ARCHIVE} ${BINARY}
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - name: Create archive (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          BINARY="domaindetails-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          ARCHIVE="domaindetails-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
+          zip ${ARCHIVE} ${BINARY}
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: domaindetails-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: domaindetails-*.*
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          files: artifacts/**/*
+          body: |
+            ## Installation
+
+            ### Homebrew (macOS/Linux)
+            ```bash
+            brew install simplebytes-com/tap/domaindetails
+            ```
+
+            ### Docker
+            ```bash
+            docker pull domaindetails/cli:${{ steps.version.outputs.VERSION }}
+            ```
+
+            ### Binary Download
+            Download the appropriate binary for your platform below.
+
+            ## Usage
+            ```bash
+            domaindetails lookup example.com
+            domaindetails rdap example.com --json
+            domaindetails whois example.com --raw
+            ```
+
+            See [README](https://github.com/simplebytes-com/domaindetails-cli#readme) for full documentation.
+
+  docker:
+    name: Docker
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            domaindetails/cli:${{ steps.version.outputs.VERSION }}
+            domaindetails/cli:latest
+
+  update-homebrew:
+    name: Update Homebrew
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: simplebytes-com/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download release assets
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          BASE_URL="https://github.com/simplebytes-com/domaindetails-cli/releases/download/v${VERSION}"
+
+          curl -sLO "${BASE_URL}/domaindetails-${VERSION}-darwin-amd64.tar.gz"
+          curl -sLO "${BASE_URL}/domaindetails-${VERSION}-darwin-arm64.tar.gz"
+          curl -sLO "${BASE_URL}/domaindetails-${VERSION}-linux-amd64.tar.gz"
+          curl -sLO "${BASE_URL}/domaindetails-${VERSION}-linux-arm64.tar.gz"
+
+      - name: Calculate SHA256
+        id: sha
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          echo "DARWIN_AMD64=$(shasum -a 256 domaindetails-${VERSION}-darwin-amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "DARWIN_ARM64=$(shasum -a 256 domaindetails-${VERSION}-darwin-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "LINUX_AMD64=$(shasum -a 256 domaindetails-${VERSION}-linux-amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "LINUX_ARM64=$(shasum -a 256 domaindetails-${VERSION}-linux-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cat > homebrew-tap/Formula/domaindetails.rb << 'FORMULA'
+          class Domaindetails < Formula
+            desc "Domain RDAP and WHOIS lookup CLI tool"
+            homepage "https://domaindetails.com"
+            version "${{ steps.version.outputs.VERSION }}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v${{ steps.version.outputs.VERSION }}/domaindetails-${{ steps.version.outputs.VERSION }}-darwin-arm64.tar.gz"
+                sha256 "${{ steps.sha.outputs.DARWIN_ARM64 }}"
+              else
+                url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v${{ steps.version.outputs.VERSION }}/domaindetails-${{ steps.version.outputs.VERSION }}-darwin-amd64.tar.gz"
+                sha256 "${{ steps.sha.outputs.DARWIN_AMD64 }}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v${{ steps.version.outputs.VERSION }}/domaindetails-${{ steps.version.outputs.VERSION }}-linux-arm64.tar.gz"
+                sha256 "${{ steps.sha.outputs.LINUX_ARM64 }}"
+              else
+                url "https://github.com/simplebytes-com/domaindetails-cli/releases/download/v${{ steps.version.outputs.VERSION }}/domaindetails-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz"
+                sha256 "${{ steps.sha.outputs.LINUX_AMD64 }}"
+              end
+            end
+
+            def install
+              bin.install "domaindetails-#{OS.kernel_name.downcase}-#{Hardware::CPU.arch}" => "domaindetails"
+            end
+
+            test do
+              system "#{bin}/domaindetails", "--version"
+            end
+          end
+          FORMULA
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/domaindetails.rb
+          git commit -m "Update domaindetails to v${{ steps.version.outputs.VERSION }}"
+          git push
