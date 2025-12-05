@@ -14,7 +14,7 @@ import (
 
 const (
 	// APIBaseURL is the DomainDetails.com API endpoint
-	APIBaseURL = "https://api.domaindetails.io"
+	APIBaseURL = "https://api.domaindetails.com"
 
 	// RequestTimeout is the timeout for WHOIS requests
 	RequestTimeout = 15 * time.Second
