@@ -1,4 +1,5 @@
 import importlib.util
+import gzip
 import sys
 import unittest
 from pathlib import Path
@@ -35,6 +36,23 @@ class WaybackDomainHistoryTests(unittest.TestCase):
         self.assertNotIn("hidden@example.com", text)
         self.assertIn("hi@example.com", text)
         self.assertEqual(parser.links, ["https://example.com/contact"])
+
+    def test_parser_collects_frame_source(self):
+        parser = wayback.PageParser("https://example.com/")
+        parser.feed("<frameset><frame src='https://elsewhere.example/site'></frameset>")
+        self.assertEqual(parser.frame_sources, ["https://elsewhere.example/site"])
+        self.assertEqual(wayback.classify_page("", "", 0, parser.frame_sources), ("frameset-or-forward", "high"))
+
+    def test_short_numeric_fragment_is_not_a_phone(self):
+        self.assertIsNone(wayback.clean_phone("20 30-010"))
+        self.assertEqual(wayback.clean_phone("+357 25 00 00 94"), "+357 25 00 00 94")
+
+    def test_homepage_excludes_query_variants(self):
+        self.assertTrue(wayback.is_homepage("https://www.example.com/", "example.com"))
+        self.assertFalse(wayback.is_homepage("https://example.com/?add-to-cart=1", "example.com"))
+
+    def test_gzip_fixture_has_expected_magic(self):
+        self.assertTrue(gzip.compress(b"<html></html>").startswith(b"\x1f\x8b"))
 
     def test_timeline_flags_classification_transition(self):
         first = wayback.Snapshot("2020-01-01", "20200101000000", "https://example.com", "replay1", "Acme", "developed", "high", 200, 5, _comparison_text="company products")

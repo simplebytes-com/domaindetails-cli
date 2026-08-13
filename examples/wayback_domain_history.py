@@ -9,6 +9,7 @@ only Python's standard library and is conservative about what it calls a
 from __future__ import annotations
 
 import argparse
+import gzip
 import html
 import json
 import re
@@ -73,6 +74,8 @@ class Snapshot:
     emails: list[str] = field(default_factory=list)
     phones: list[str] = field(default_factory=list)
     social_profiles: list[str] = field(default_factory=list)
+    forwards_to: list[str] = field(default_factory=list)
+    retrieval_mode: str = "raw"
     text_sample: str = ""
     error: str | None = None
     _comparison_text: str = field(default="", repr=False)
@@ -90,6 +93,7 @@ class PageParser(HTMLParser):
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
         self.links: list[str] = []
+        self.frame_sources: list[str] = []
         self._skip_depth = 0
         self._in_title = False
 
@@ -103,6 +107,10 @@ class PageParser(HTMLParser):
             href = dict(attrs).get("href")
             if href:
                 self.links.append(urljoin(self.base_url, href.strip()))
+        if tag in {"frame", "iframe"}:
+            source = dict(attrs).get("src")
+            if source:
+                self.frame_sources.append(urljoin(self.base_url, source.strip()))
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -127,7 +135,12 @@ def request_text(url: str, timeout: int, retries: int = 2) -> str:
         try:
             with urlopen(request, timeout=timeout) as response:
                 charset = response.headers.get_content_charset() or "utf-8"
-                return response.read(5_000_000).decode(charset, errors="replace")
+                body = response.read(5_000_000)
+                # Some raw Wayback replays return the originally captured gzip
+                # body without a Content-Encoding header.
+                if body.startswith(b"\x1f\x8b"):
+                    body = gzip.decompress(body)
+                return body.decode(charset, errors="replace")
         except HTTPError as exc:
             if exc.code not in {429, 502, 503, 504} or attempt == retries:
                 raise
@@ -190,7 +203,11 @@ def fetch_captures(domain: str, args: argparse.Namespace) -> list[Capture]:
 def is_homepage(url: str, domain: str) -> bool:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().removeprefix("www.")
-    return host == domain and parsed.path.rstrip("/") in {"", "/index.html", "/index.htm", "/index.php"}
+    return (
+        host == domain
+        and not parsed.query
+        and parsed.path.rstrip("/") in {"", "/index.html", "/index.htm", "/index.php"}
+    )
 
 
 def choose_captures(captures: list[Capture], domain: str, maximum: int) -> list[Capture]:
@@ -218,16 +235,18 @@ def choose_captures(captures: list[Capture], domain: str, maximum: int) -> list[
 def clean_phone(value: str) -> str | None:
     value = SPACE_RE.sub(" ", value).strip(" .,-")
     digits = re.sub(r"\D", "", value)
-    return value if 7 <= len(digits) <= 15 else None
+    return value if 9 <= len(digits) <= 15 else None
 
 
-def classify_page(text: str, title: str, internal_links: int) -> tuple[str, str]:
+def classify_page(text: str, title: str, internal_links: int, frame_sources: list[str] | None = None) -> tuple[str, str]:
     combined = f"{title} {text}"
     words = text.split()
     if PARKED_RE.search(combined):
         return "parked-or-for-sale", "high"
     if UNDER_CONSTRUCTION_RE.search(combined):
         return "under-construction", "high"
+    if frame_sources and len(words) < 50:
+        return "frameset-or-forward", "high"
     strong_signals = sum((len(words) >= 120, internal_links >= 4, len(title) >= 4))
     if strong_signals == 3 or (len(words) >= 250 and internal_links >= 2):
         return "developed", "high"
@@ -240,10 +259,17 @@ def classify_page(text: str, title: str, internal_links: int) -> tuple[str, str]
 
 def analyze_capture(capture: Capture, domain: str, timeout: int) -> Snapshot:
     try:
-        source = request_text(capture.raw_url, timeout)
+        retrieval_mode = "raw"
+        try:
+            source = request_text(capture.raw_url, timeout)
+        except (HTTPError, URLError, TimeoutError):
+            # Raw replay occasionally follows an archived redirect back to a
+            # now-dead origin. Standard replay is still useful evidence.
+            source = request_text(capture.replay_url, timeout)
+            retrieval_mode = "standard-replay-fallback"
         parser = PageParser(capture.original)
         parser.feed(source)
-        title = SPACE_RE.sub(" ", " ".join(parser.title_parts)).strip()
+        title = SPACE_RE.sub(" ", parser.title_parts[0] if parser.title_parts else "").strip()
         text = SPACE_RE.sub(" ", " ".join(parser.text_parts)).strip()
         internal_links = sum(
             1
@@ -259,7 +285,19 @@ def analyze_capture(capture: Capture, domain: str, timeout: int) -> Snapshot:
         }
         social_hosts = ("linkedin.com", "twitter.com", "x.com", "facebook.com", "instagram.com", "youtube.com")
         socials = sorted({link for link in parser.links if any(host in (urlparse(link).hostname or "") for host in social_hosts)})
-        classification, confidence = classify_page(text, title, internal_links)
+        if retrieval_mode == "standard-replay-fallback" and title.strip().lower() == "wayback machine":
+            classification, confidence = "unavailable", "high"
+            parser.frame_sources = []
+            text = ""
+        else:
+            classification, confidence = classify_page(text, title, internal_links, parser.frame_sources)
+        frame_sources = sorted(
+            {
+                source
+                for source in parser.frame_sources
+                if not (urlparse(source).hostname or "").lower().endswith(("archive.org", "web.archive.org"))
+            }
+        )
         return Snapshot(
             date=capture.date,
             timestamp=capture.timestamp,
@@ -273,6 +311,8 @@ def analyze_capture(capture: Capture, domain: str, timeout: int) -> Snapshot:
             emails=sorted(emails, key=str.lower),
             phones=sorted(phones),
             social_profiles=socials,
+            forwards_to=frame_sources,
+            retrieval_mode=retrieval_mode,
             text_sample=text[:300],
             _comparison_text=text[:20_000].lower(),
         )

@@ -30,3 +30,6 @@ coverage.html
 # Python sample tooling
 __pycache__/
 *.py[cod]
+
+# Locally generated Wayback analysis reports
+artifacts/wayback-history/*.json
