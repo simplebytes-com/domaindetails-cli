@@ -43,6 +43,14 @@ class WaybackDomainHistoryTests(unittest.TestCase):
         self.assertEqual(parser.frame_sources, ["https://elsewhere.example/site"])
         self.assertEqual(wayback.classify_page("", "", 0, parser.frame_sources), ("frameset-or-forward", "high"))
 
+    def test_parser_decodes_cloudflare_protected_email(self):
+        address = "support@example.com"
+        key = 0x42
+        encoded = f"{key:02x}" + "".join(f"{ord(char) ^ key:02x}" for char in address)
+        parser = wayback.PageParser("https://example.com/")
+        parser.feed(f'<a data-cfemail="{encoded}">[email protected]</a>')
+        self.assertEqual(parser.cloudflare_emails, [address])
+
     def test_short_numeric_fragment_is_not_a_phone(self):
         self.assertIsNone(wayback.clean_phone("20 30-010"))
         self.assertEqual(wayback.clean_phone("+357 25 00 00 94"), "+357 25 00 00 94")

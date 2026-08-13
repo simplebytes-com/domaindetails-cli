@@ -94,23 +94,32 @@ class PageParser(HTMLParser):
         self.text_parts: list[str] = []
         self.links: list[str] = []
         self.frame_sources: list[str] = []
+        self.cloudflare_emails: list[str] = []
         self._skip_depth = 0
         self._in_title = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        attributes = dict(attrs)
         if tag in self.SKIP:
             self._skip_depth += 1
         if tag == "title":
             self._in_title = True
         if tag == "a":
-            href = dict(attrs).get("href")
+            href = attributes.get("href")
             if href:
                 self.links.append(urljoin(self.base_url, href.strip()))
         if tag in {"frame", "iframe"}:
-            source = dict(attrs).get("src")
+            source = attributes.get("src")
             if source:
                 self.frame_sources.append(urljoin(self.base_url, source.strip()))
+        encoded_email = attributes.get("data-cfemail")
+        if encoded_email and re.fullmatch(r"[0-9a-fA-F]+", encoded_email):
+            try:
+                encoded = bytes.fromhex(encoded_email)
+                self.cloudflare_emails.append("".join(chr(value ^ encoded[0]) for value in encoded[1:]))
+            except (ValueError, IndexError):
+                pass
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -276,7 +285,7 @@ def analyze_capture(capture: Capture, domain: str, timeout: int) -> Snapshot:
             for link in set(parser.links)
             if (urlparse(link).hostname or "").lower().removeprefix("www.") == domain
         )
-        emails = set(EMAIL_RE.findall(text + " " + " ".join(parser.links)))
+        emails = set(EMAIL_RE.findall(text + " " + " ".join(parser.links))) | set(parser.cloudflare_emails)
         emails = {email for email in emails if not email.lower().endswith((".png", ".jpg", ".gif", ".webp"))}
         phones = {
             phone
