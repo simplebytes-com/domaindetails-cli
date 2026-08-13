@@ -33,11 +33,17 @@ EMAIL_RE = re.compile(r"(?<![\w.+-])([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})(?![\w.-])")
 PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{6,}\d)(?!\w)")
 SPACE_RE = re.compile(r"\s+")
 PARKED_RE = re.compile(
-    r"\b(domain (?:is )?for sale|buy this domain|domain parking|parked (?:free|domain)|"
-    r"sedo|afternic|dan\.com|hugedomains|bodis)\b",
+    r"\b(domain (?:name )?(?:[\w.-]+ )?is (?:available )?for sale|available for sale|"
+    r"buy this domain|we buy domains|domain parking|domainpark|parked (?:free|domain)|"
+    r"sponsored listings?|related searches?|make this your home page|anything\.com ltd|"
+    r"sedo|afternic|dan\.com|hugedomains|buydomains|bodis)\b",
     re.I,
 )
-UNDER_CONSTRUCTION_RE = re.compile(r"\b(under construction|coming soon|site is being built)\b", re.I)
+UNDER_CONSTRUCTION_RE = re.compile(
+    r"\b(under construction|coming soon|coming (?:spring|summer|fall|winter)|site is being built)\b",
+    re.I,
+)
+MISCONFIGURED_RE = re.compile(r"phpinfo\(\)|PHP Version.{0,200}\bSystem\b.{0,200}\bBuild Date\b", re.I | re.S)
 
 
 @dataclass(frozen=True)
@@ -244,14 +250,27 @@ def choose_captures(captures: list[Capture], domain: str, maximum: int) -> list[
 def clean_phone(value: str) -> str | None:
     value = SPACE_RE.sub(" ", value).strip(" .,-")
     digits = re.sub(r"\D", "", value)
-    return value if 9 <= len(digits) <= 15 else None
+    if not 9 <= len(digits) <= 15:
+        return None
+    if value.startswith("+"):
+        return value
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value):
+        return None
+    if re.search(r"\b\d{4}-\d{2}-\d{2}\b", value):
+        return None
+    if re.fullmatch(r"\d+[.]\d+\s+\d+[.]\d+", value):
+        return None
+    separators = len(re.findall(r"[\s().-]", value))
+    return value if separators >= 2 else None
 
 
 def classify_page(text: str, title: str, internal_links: int, frame_sources: list[str] | None = None) -> tuple[str, str]:
-    combined = f"{title} {text}"
+    combined = f"{title} {text} {' '.join(frame_sources or [])}"
     words = text.split()
     if PARKED_RE.search(combined):
         return "parked-or-for-sale", "high"
+    if MISCONFIGURED_RE.search(combined):
+        return "misconfigured-or-placeholder", "high"
     if UNDER_CONSTRUCTION_RE.search(combined):
         return "under-construction", "high"
     if frame_sources and len(words) < 50:
@@ -285,7 +304,9 @@ def analyze_capture(capture: Capture, domain: str, timeout: int) -> Snapshot:
             for link in set(parser.links)
             if (urlparse(link).hostname or "").lower().removeprefix("www.") == domain
         )
-        emails = set(EMAIL_RE.findall(text + " " + " ".join(parser.links))) | set(parser.cloudflare_emails)
+        emails = set(
+            EMAIL_RE.findall(text + " " + " ".join(parser.links) + " " + " ".join(parser.frame_sources))
+        ) | set(parser.cloudflare_emails)
         emails = {email for email in emails if not email.lower().endswith((".png", ".jpg", ".gif", ".webp"))}
         phones = {
             phone
@@ -421,7 +442,9 @@ def run(args: argparse.Namespace) -> dict:
         contact_snapshots.append(analyze_capture(capture, domain, args.timeout))
         time.sleep(args.delay)
 
-    evidence = ([last_developed] if last_developed else []) + contact_snapshots
+    evidence_classes = {"developed", "parked-or-for-sale", "frameset-or-forward"}
+    evidence = [snapshot for snapshot in snapshots if snapshot.classification in evidence_classes]
+    evidence.extend(contact_snapshots)
     historical_contacts = {
         "emails": sorted({item for snapshot in evidence for item in snapshot.emails}, key=str.lower),
         "phones": sorted({item for snapshot in evidence for item in snapshot.phones}),

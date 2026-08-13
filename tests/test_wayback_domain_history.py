@@ -29,6 +29,17 @@ class WaybackDomainHistoryTests(unittest.TestCase):
         text = "This domain is for sale. " + "word " * 300
         self.assertEqual(wayback.classify_page(text, "Buy this domain", 10), ("parked-or-for-sale", "high"))
 
+    def test_sponsored_directory_is_parked(self):
+        text = "Cyclist.com sponsored listings related searches " + "cycling " * 300
+        self.assertEqual(wayback.classify_page(text, "Cyclist.com", 50), ("parked-or-for-sale", "high"))
+
+    def test_phpinfo_dump_is_not_developed(self):
+        text = "Coming spring of 2017 phpinfo() PHP Version 5.3 System Windows Build Date Jan 2013 " + "config " * 300
+        self.assertEqual(
+            wayback.classify_page(text, "Cyclist.com - Official Site", 2),
+            ("misconfigured-or-placeholder", "high"),
+        )
+
     def test_parser_ignores_script_text_and_collects_links(self):
         parser = wayback.PageParser("https://example.com/")
         parser.feed("<title>Acme</title><script>hidden@example.com</script><p>Email hi@example.com</p><a href='/contact'>Contact</a>")
@@ -53,7 +64,10 @@ class WaybackDomainHistoryTests(unittest.TestCase):
 
     def test_short_numeric_fragment_is_not_a_phone(self):
         self.assertIsNone(wayback.clean_phone("20 30-010"))
+        self.assertIsNone(wayback.clean_phone("1023022900919"))
+        self.assertIsNone(wayback.clean_phone("172.31.26.189"))
         self.assertEqual(wayback.clean_phone("+357 25 00 00 94"), "+357 25 00 00 94")
+        self.assertEqual(wayback.clean_phone("781-839-7903"), "781-839-7903")
 
     def test_homepage_excludes_query_variants(self):
         self.assertTrue(wayback.is_homepage("https://www.example.com/", "example.com"))
