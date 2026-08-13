@@ -145,6 +145,19 @@ DNSSEC:          signed
 1. **RDAP Lookups**: Queries RDAP servers directly using the IANA bootstrap file (cached locally at `~/.domaindetails/`)
 2. **WHOIS Lookups**: Routes through the [DomainDetails.com API](https://api.domaindetails.io) which handles raw WHOIS queries and parsing
 
+## Experimental: Wayback domain history
+
+The dependency-free sample script in `examples/wayback_domain_history.py` analyzes representative Wayback Machine captures, reports likely major changes, identifies the last capture that looks like a developed website, and extracts historical contact details with source URLs.
+
+```bash
+python3 examples/wayback_domain_history.py example.com \
+  --from 2005 \
+  --max-snapshots 20 \
+  --output example-history.json
+```
+
+The script deliberately describes dates as observations rather than exact transition dates. Contact information is historical and must not be treated as currently verified. It uses the public Internet Archive endpoints, so larger domains may be slow or rate-limited.
+
 ### IANA Bootstrap Cache
 
 The CLI caches the IANA RDAP bootstrap file locally to avoid repeated network requests:
